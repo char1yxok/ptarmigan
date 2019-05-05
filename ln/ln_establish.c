@@ -50,6 +50,7 @@
 #include "ln_msg_establish.h"
 #include "ln_local.h"
 #include "ln_setupctl.h"
+#include "ln_close.h"
 #include "ln_establish.h"
 
 
@@ -81,7 +82,7 @@ static bool create_funding_tx(ln_channel_t *pChannel, bool bSign);
  **************************************************************************/
 
 bool /*HIDDEN*/ ln_open_channel_send(
-    ln_channel_t *pChannel, const ln_fundin_t *pFundin, uint64_t FundingSat, uint64_t PushSat, uint32_t FeeRate,
+    ln_channel_t *pChannel, const ln_fundin_t *pFundin, uint64_t FundingSat, uint64_t PushMSat, uint32_t FeeRate,
     uint8_t PrivChannel)
 {
     if (!M_INIT_FLAG_EXCHNAGED(pChannel->init_flag)) {
@@ -117,7 +118,7 @@ bool /*HIDDEN*/ ln_open_channel_send(
     msg.p_chain_hash = ln_genesishash_get();
     msg.p_temporary_channel_id = pChannel->channel_id;
     msg.funding_satoshis = FundingSat;
-    msg.push_msat = LN_SATOSHI2MSAT(PushSat);
+    msg.push_msat = PushMSat;
     msg.dust_limit_satoshis = pChannel->establish.param.dust_limit_sat;
     if (pChannel->establish.param.max_htlc_value_in_flight_msat > LN_SATOSHI2MSAT(msg.funding_satoshis)) {
         msg.max_htlc_value_in_flight_msat = LN_SATOSHI2MSAT(msg.funding_satoshis);
@@ -268,7 +269,7 @@ bool HIDDEN ln_open_channel_recv(ln_channel_t *pChannel, const uint8_t *pData, u
         LN_FUNDING_STATE_STATE_FUNDING);
 
     //generate keys
-    ln_update_script_pubkeys(pChannel);
+    ln_derkey_update_script_pubkeys(&pChannel->keys_local, &pChannel->keys_remote);
     ln_print_keys(pChannel);
 
     if (!ln_accept_channel_send(pChannel)) {
@@ -387,7 +388,7 @@ bool HIDDEN ln_accept_channel_recv(ln_channel_t *pChannel, const uint8_t *pData,
     memcpy(pChannel->keys_remote.prev_per_commitment_point, pChannel->keys_remote.per_commitment_point, BTC_SZ_PUBKEY);
 
     //generate keys
-    ln_update_script_pubkeys(pChannel);
+    ln_derkey_update_script_pubkeys(&pChannel->keys_local, &pChannel->keys_remote);
     ln_print_keys(pChannel);
 
     //create funding_tx
@@ -404,9 +405,9 @@ bool HIDDEN ln_accept_channel_recv(ln_channel_t *pChannel, const uint8_t *pData,
     LOGD("obscured_commit_num_mask=0x%016" PRIx64 "\n", pChannel->commit_info_remote.obscured_commit_num_mask);
 
     //initial commit tx(Remoteが持つTo-Local)
-    //  HTLCは存在しないため、計算省略
-    if (!ln_commit_tx_create_remote( //close無し、署名作成無し
-        pChannel, &pChannel->commit_info_remote, NULL, NULL)) {
+    if (!ln_commit_tx_create_remote(
+        &pChannel->commit_info_remote, &pChannel->update_info,
+        &pChannel->keys_local, &pChannel->keys_remote, NULL)) {
         LOGE("fail: ???\n");
         return false;
     }
@@ -474,18 +475,17 @@ bool HIDDEN ln_funding_created_recv(ln_channel_t *pChannel, const uint8_t *pData
 
     //verify sign
     //  initial commit tx(自分が持つTo-Local)
-    //    HTLCは存在しない
-    if (!ln_commit_tx_create_local( //closeもHTLC署名も無し
-        pChannel, &pChannel->commit_info_local, NULL, NULL, 0)) {
+    if (!ln_commit_tx_create_local(
+        &pChannel->commit_info_local, &pChannel->update_info,
+        &pChannel->keys_local, NULL, 0)) {
         LOGE("fail: create_to_local\n");
         return false;
     }
 
     //initial commit tx(Remoteが持つTo-Local)
-    //  署名計算のみのため、計算後は破棄する
-    //  HTLCは存在しないため、計算省略
-    if (!ln_commit_tx_create_remote( //close無し、署名作成無し
-        pChannel, &pChannel->commit_info_remote, NULL, NULL)) {
+    if (!ln_commit_tx_create_remote(
+        &pChannel->commit_info_remote, &pChannel->update_info,
+        &pChannel->keys_local, &pChannel->keys_remote, NULL)) {
         LOGE("fail: ???\n");
         return false;
     }
@@ -545,8 +545,9 @@ bool HIDDEN ln_funding_signed_recv(ln_channel_t *pChannel, const uint8_t *pData,
 
     //initial commit tx(自分が持つTo-Local)
     //  HTLCは存在しない
-    if (!ln_commit_tx_create_local( //closeもHTLC署名も無し
-        pChannel, &pChannel->commit_info_local, NULL, NULL, 0)) {
+    if (!ln_commit_tx_create_local(
+        &pChannel->commit_info_local, &pChannel->update_info,
+        &pChannel->keys_local, NULL, 0)) {
         LOGE("fail: create_to_local\n");
         return false;
     }
@@ -613,7 +614,7 @@ bool HIDDEN ln_funding_locked_recv(ln_channel_t *pChannel, const uint8_t *pData,
     //funding中終了
     ln_establish_free(pChannel);
 
-    ln_update_script_pubkeys(pChannel);
+    ln_derkey_update_script_pubkeys(&pChannel->keys_local, &pChannel->keys_remote);
     ln_print_keys(pChannel);
     M_DB_CHANNEL_SAVE(pChannel);
 
@@ -655,7 +656,7 @@ bool /*HIDDEN*/ ln_channel_reestablish_send(ln_channel_t *pChannel)
         if (pChannel->commit_info_remote.commit_num) {
             if (!ln_derkey_remote_storage_get_secret(
                 &pChannel->keys_remote, your_last_per_commitment_secret,
-                (uint64_t)(LN_SECRET_INDEX_INIT - (pChannel->commit_info_remote.commit_num - 1)))) {
+                (uint64_t)(LN_SECRET_INDEX_INIT - pChannel->commit_info_remote.revoke_num))) {
                 LOGD("no last secret\n");
                 memset(your_last_per_commitment_secret, 0, BTC_SZ_PRIVKEY);
             }
@@ -669,21 +670,22 @@ bool /*HIDDEN*/ ln_channel_reestablish_send(ln_channel_t *pChannel)
     if (!ln_msg_channel_reestablish_write(&buf, &msg, option_data_loss_protect)) return false;
     ln_callback(pChannel, LN_CB_TYPE_SEND_MESSAGE, &buf);
     utl_buf_free(&buf);
+
     pChannel->init_flag |= M_INIT_FLAG_REEST_SEND;
+    if (M_INIT_FLAG_REEST_EXCHNAGED(pChannel->init_flag)) {
+        ln_channel_reestablish_after(pChannel);
+    }
     return true;
 }
 
 
 bool HIDDEN ln_channel_reestablish_recv(ln_channel_t *pChannel, const uint8_t *pData, uint16_t Len)
 {
-    bool ret = false;
-
     LOGD("BEGIN\n");
 
     ln_msg_channel_reestablish_t msg;
     bool option_data_loss_protect = (pChannel->lfeature_local & LN_INIT_LF_OPT_DATALOSS);
-    ret = ln_msg_channel_reestablish_read(&msg, pData, Len, option_data_loss_protect);
-    if (!ret) {
+    if (!ln_msg_channel_reestablish_read(&msg, pData, Len, option_data_loss_protect)) {
         M_SET_ERR(pChannel, LNERR_MSG_READ, "read message");
         return false;
     }
@@ -699,8 +701,8 @@ bool HIDDEN ln_channel_reestablish_recv(ln_channel_t *pChannel, const uint8_t *p
     }
 
     LN_DBG_COMMIT_NUM_PRINT(pChannel);
-    pChannel->reest_commit_num = msg.next_local_commitment_number;
-    pChannel->reest_revoke_num = msg.next_remote_revocation_number;
+    pChannel->reest_next_local_commit_num = msg.next_local_commitment_number;
+    pChannel->reest_next_remote_revoke_num = msg.next_remote_revocation_number;
 
     //BOLT#02
     //  commit_txは、作成する関数内でcommit_num+1している(インクリメントはしない)。
@@ -753,26 +755,83 @@ bool HIDDEN ln_channel_reestablish_recv(ln_channel_t *pChannel, const uint8_t *p
             } else {
                 //SHOULD fail the channel.
                 LOGE("SHOULD fail the channel\n");
-                ret = false;
-                goto LABEL_EXIT;
+                goto LABEL_ERROR;
             }
         } else {
             //SHOULD fail the channel.
             LOGE("SHOULD fail the channel\n");
-            ret = false;
-            goto LABEL_EXIT;
+            goto LABEL_ERROR;
         }
     }
 
     ln_callback(pChannel, LN_CB_TYPE_NOTIFY_REESTABLISH_RECV, NULL);
 
-    ret = true;
-
-LABEL_EXIT:
-    if (ret) {
-        pChannel->init_flag |= M_INIT_FLAG_REEST_RECV;
+    pChannel->init_flag |= M_INIT_FLAG_REEST_RECV;
+    if (M_INIT_FLAG_REEST_EXCHNAGED(pChannel->init_flag)) {
+        ln_channel_reestablish_after(pChannel);
     }
-    return ret;
+    return true;
+
+LABEL_ERROR:
+    return false;
+}
+
+
+void ln_channel_reestablish_before(ln_channel_t *pChannel)
+{
+    bool updated = false;
+    ln_update_info_clear_pending_updates(&pChannel->update_info, &updated);
+    ln_shutdown_reset(pChannel);
+}
+
+
+void ln_channel_reestablish_after(ln_channel_t *pChannel)
+{
+    LN_DBG_COMMIT_NUM_PRINT(pChannel);
+    LN_DBG_UPDATES_PRINT(pChannel->update_info.updates);
+
+    LOGD("pChannel->reest_next_remote_revoke_num=%" PRIu64 "\n", pChannel->reest_next_remote_revoke_num);
+    LOGD("pChannel->reest_next_local_commit_num=%" PRIu64 "\n", pChannel->reest_next_local_commit_num);
+
+    //
+    //BOLT#02
+
+    //  next_local_commitment_number
+    if (pChannel->commit_info_remote.commit_num == pChannel->reest_next_local_commit_num) {
+        //  if next_local_commitment_number is equal to the commitment number of the last commitment_signed message the receiving node has sent:
+        //      * MUST reuse the same commitment number for its next commitment_signed.
+        //remote.per_commitment_pointを1つ戻して、キャンセルされたupdateメッセージを再送する
+        //XXX: If the corresponding `revoke_andk_ack` is received, channel should be failed
+        LOGD("$$$ resend: previous update message\n");
+        ln_commit_tx_rewind_one_commit_remote(&pChannel->commit_info_remote, &pChannel->update_info);
+    }
+
+    //  next_remote_revocation_number
+    if (pChannel->commit_info_local.revoke_num == pChannel->reest_next_remote_revoke_num) {
+        // if next_remote_revocation_number is equal to the commitment number of the last revoke_and_ack the receiving node sent, AND the receiving node hasn't already received a closing_signed:
+        //      * MUST re-send the revoke_and_ack.
+        LOGD("$$$ next_remote_revocation_number == local commit_num: resend\n");
+
+        //  for resending `revoke_and_ack`
+        //    as we updated index at the first `revoke_and_ack`
+        uint8_t prev_secret[BTC_SZ_PRIVKEY];
+        ln_derkey_local_storage_create_second_prev_per_commitment_secret(&pChannel->keys_local, prev_secret, NULL);
+
+        utl_buf_t buf = UTL_BUF_INIT;
+        ln_msg_revoke_and_ack_t revack;
+        revack.p_channel_id = pChannel->channel_id;
+        revack.p_per_commitment_secret = prev_secret;
+        revack.p_next_per_commitment_point = pChannel->keys_local.per_commitment_point;
+        LOGD("  send revoke_and_ack.next_per_commitment_point=%" PRIu64 "\n", pChannel->keys_local.per_commitment_point);
+        bool ret = ln_msg_revoke_and_ack_write(&buf, &revack);
+        if (ret) {
+            ln_callback(pChannel, LN_CB_TYPE_SEND_MESSAGE, &buf);
+            LOGD("OK: re-send revoke_and_ack\n");
+        } else {
+            LOGE("fail: re-send revoke_and_ack\n");
+        }
+        utl_buf_free(&buf);
+    }
 }
 
 
@@ -934,7 +993,7 @@ static void start_funding_wait(ln_channel_t *pChannel, bool bSendTx)
 
     //storage_next_indexデクリメントおよびper_commit_secret更新
     ln_derkey_local_storage_update_per_commitment_point(&pChannel->keys_local);
-    ln_update_script_pubkeys(pChannel);
+    ln_derkey_update_script_pubkeys(&pChannel->keys_local, &pChannel->keys_remote);
 
     //save the channel
     //  we should save the channel before broadcasting the funding tx

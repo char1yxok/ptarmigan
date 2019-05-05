@@ -76,9 +76,14 @@ void lnapp_stop_threads(lnapp_conf_t *p_conf)
         p_conf->active = false;
         //mainloop待ち合わせ解除(*2)
         pthread_cond_signal(&p_conf->cond);
+        char str_sci[LN_SZ_SHORT_CHANNEL_ID_STR + 1];
+        ln_short_channel_id_string(str_sci, ln_short_channel_id(&p_conf->channel));
         LOGD("=========================================\n");
-        LOGD("=  CHANNEL THREAD END: %016" PRIx64 " =\n", ln_short_channel_id(&p_conf->channel));
+        LOGD("=  CHANNEL THREAD END: %016" PRIx64 "(%s)\n", ln_short_channel_id(&p_conf->channel), str_sci);
         LOGD("=========================================\n");
+        LOGD("    sock=%d\n", p_conf->sock);
+        LOGD("    node_id=");
+        DUMPD(p_conf->node_id, BTC_SZ_PUBKEY);
     }
     pthread_mutex_unlock(&p_conf->mux_conf);
     LOGD("$$$ stopped\n");
@@ -119,7 +124,7 @@ bool lnapp_send_peer_noise(lnapp_conf_t *p_conf, const utl_buf_t *pBuf)
     uint16_t type = utl_int_pack_u16be(pBuf->buf);
     LOGD("[SEND]type=%04x(%s): sock=%d, Len=%d\n", type, ln_msg_name(type), p_conf->sock, pBuf->len);
 
-    pthread_mutex_lock(&p_conf->mux_send);
+    pthread_mutex_lock(&p_conf->mux_send); //lock mux_send
 
     utl_buf_t buf_enc = UTL_BUF_INIT;
     struct pollfd fds;
@@ -128,7 +133,7 @@ bool lnapp_send_peer_noise(lnapp_conf_t *p_conf, const utl_buf_t *pBuf)
     bool ret = ln_noise_enc(&p_conf->noise, &buf_enc, pBuf);
     if (!ret) {
         LOGE("fail: noise encode\n");
-        goto LABEL_EXIT;
+        goto LABEL_ERROR;
     }
 
     len = buf_enc.len;
@@ -137,59 +142,29 @@ bool lnapp_send_peer_noise(lnapp_conf_t *p_conf, const utl_buf_t *pBuf)
         fds.events = POLLOUT;
         int polr = poll(&fds, 1, M_WAIT_SEND_TO_MSEC);
         if (polr <= 0) {
-            LOGE("fail poll: %s\n", strerror(errno));
-            break;
+            LOGE("fail: poll %s\n", strerror(errno));
+            goto LABEL_ERROR;
         }
         ssize_t sz = write(p_conf->sock, buf_enc.buf, len);
         if (sz < 0) {
-            LOGE("fail write: %s\n", strerror(errno));
-            lnapp_stop_threads(p_conf);
-            break;
+            LOGE("fail: write %s\n", strerror(errno));
+            goto LABEL_ERROR;
         }
         len -= sz;
         if (len > 0) {
             utl_thread_msleep(M_WAIT_SEND_WAIT_MSEC);
         }
     }
-    utl_buf_free(&buf_enc);
 
-LABEL_EXIT:
     pthread_mutex_unlock(&p_conf->mux_send);
-    return len == 0;
-}
-
-
-bool lnapp_payment_route_save(uint64_t PaymentId, const payment_conf_t *pConf)
-{
-    return ln_db_payment_route_save(PaymentId, (const uint8_t *)pConf->hop_datain, pConf->num_hops * sizeof(ln_hop_datain_t));
-}
-
-
-bool lnapp_payment_route_load(payment_conf_t *pConf, uint64_t PaymentId)
-{
-    utl_buf_t buf = UTL_BUF_INIT;
-    if (!ln_db_payment_route_load(&buf, PaymentId)) {
-        LOGE("fail: ???\n");
-        return false;
-    }
-    if (buf.len % sizeof(ln_hop_datain_t)) {
-        LOGE("fail: ???\n");
-        utl_buf_free(&buf);
-        return false;
-    }
-    pConf->num_hops = buf.len / sizeof(ln_hop_datain_t);
-    memcpy(pConf->hop_datain, buf.buf, buf.len);
-    utl_buf_free(&buf);
+    utl_buf_free(&buf_enc);
     return true;
+
+LABEL_ERROR:
+    pthread_mutex_unlock(&p_conf->mux_send); //unlock mux_send
+    utl_buf_free(&buf_enc);
+    return false;
 }
-
-
-bool lnapp_payment_route_del(uint64_t PaymentId)
-{
-    return ln_db_payment_route_del(PaymentId);
-}
-
-
 
 
 /** エラー文字列設定

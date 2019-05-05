@@ -134,6 +134,25 @@ bool HIDDEN ln_derkey_local_storage_create_prev_per_commitment_secret(const ln_d
 }
 
 
+bool HIDDEN ln_derkey_local_storage_create_second_prev_per_commitment_secret(const ln_derkey_local_keys_t *pKeys, uint8_t *pSecret, uint8_t *pPerCommitPt)
+{
+    uint64_t storage_index = pKeys->next_storage_index + 3;
+    if (storage_index <= LN_SECRET_INDEX_INIT) {
+        /*void*/ ln_derkey_local_storage_create_per_commitment_secret(
+            pKeys, pSecret, storage_index);
+        if (pPerCommitPt) {
+            if (!btc_keys_priv2pub(pPerCommitPt, pSecret)) return false;
+        }
+    } else {
+        memset(pSecret, 0x00, BTC_SZ_PRIVKEY);
+        if (pPerCommitPt) {
+            memcpy(pPerCommitPt, pKeys->per_commitment_point, BTC_SZ_PUBKEY);
+        }
+    }
+    return true;
+}
+
+
 uint64_t ln_derkey_local_storage_get_prev_index(const ln_derkey_local_keys_t *pKeys)
 {
     if (pKeys->next_storage_index + 2 > LN_SECRET_INDEX_INIT) {
@@ -208,7 +227,7 @@ uint64_t ln_derkey_remote_storage_get_next_index(const ln_derkey_remote_keys_t *
 
 
 bool HIDDEN ln_derkey_local_update_script_pubkeys(
-    ln_derkey_local_keys_t *pLocalKeys, ln_derkey_remote_keys_t *pRemoteKeys)
+    ln_derkey_local_keys_t *pLocalKeys, const ln_derkey_remote_keys_t *pRemoteKeys)
 {
     //pubkey (for `to_remote` output)
     //LOGD("pubkey\n");
@@ -250,7 +269,7 @@ bool HIDDEN ln_derkey_local_update_script_pubkeys(
 
 
 bool HIDDEN ln_derkey_remote_update_script_pubkeys(
-    ln_derkey_remote_keys_t *pRemoteKeys, ln_derkey_local_keys_t *pLocalKeys)
+    ln_derkey_remote_keys_t *pRemoteKeys, const ln_derkey_local_keys_t *pLocalKeys)
 {
     //pubkey (for `to_remote` output)
     //LOGD("pubkey\n");

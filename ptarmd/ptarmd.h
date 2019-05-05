@@ -135,6 +135,7 @@ extern "C" {
 
 /** @enum   ptarmd_event_t
  *  @brief  call script event
+ *  @note   update with kSCRIPT[]
  */
 typedef enum {
     PTARMD_EVT_STARTED,
@@ -147,7 +148,8 @@ typedef enum {
     PTARMD_EVT_FULFILL,
     PTARMD_EVT_FAIL,
     PTARMD_EVT_HTLCCHANGED,
-    PTARMD_EVT_CLOSED
+    PTARMD_EVT_CLOSED,
+    PTARMD_EVT_DBCLOSED
 } ptarmd_event_t;
 
 
@@ -198,20 +200,10 @@ typedef struct funding_conf_t {
     uint8_t         txid[BTC_SZ_TXID];
     int             txindex;
     uint64_t        funding_sat;
-    uint64_t        push_sat;
+    uint64_t        push_msat;
     uint32_t        feerate_per_kw;
     uint8_t         priv_channel;           //not 0: private channel
 } funding_conf_t;
-
-
-/** @struct     payment_conf_t
- *  @brief      送金情報(test用)
- */
-typedef struct payment_conf_t {
-    uint8_t             payment_hash[BTC_SZ_HASH256];
-    uint8_t             num_hops;
-    ln_hop_datain_t     hop_datain[1 + LN_HOP_MAX];     //先頭は送信者
-} payment_conf_t;
 
 
 /** @struct     rpc_conf_t
@@ -347,21 +339,6 @@ void ptarmd_preimage_lock(void);
 void ptarmd_preimage_unlock(void);
 
 
-/** 転送可能lnapp_conf_t取得(short_channel_id)
- *
- * @param[in]   short_channel_id    検索するshort_channel_id
- * @retval  非NULL      検索成功
- * @retval  NULL        検索失敗
- * @note
- *  - 以下の条件を満たす
- *      - short_channel_idに対応するlnapp_conf_tが存在する
- *      - 初期メッセージ交換済み(init/channel_reestablish/etc...)
- *      - ping/pongが止まっていない
- *      - channel statusがNormal Operationである
- */
-lnapp_conf_t *ptarmd_search_transferable_channel(uint64_t short_channel_id);
-
-
 /** 接続済みlnapp_conf_t取得(node_id)
  *
  * @param[in]   p_node_id       検索するnode_id
@@ -369,15 +346,6 @@ lnapp_conf_t *ptarmd_search_transferable_channel(uint64_t short_channel_id);
  * @retval  NULL        検索失敗
  */
 lnapp_conf_t *ptarmd_search_connected_node_id(const uint8_t *p_node_id);
-
-
-/** 転送可能lnapp_conf_t取得(node_id)
- *
- * @param[in]   p_node_id       検索するnode_id
- * @retval  非NULL      検索成功
- * @retval  NULL        検索失敗
- */
-lnapp_conf_t *ptarmd_search_transferable_node_id(const uint8_t *p_node_id);
 
 
 /** ノード接続失敗リスト追加

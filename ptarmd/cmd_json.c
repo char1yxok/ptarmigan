@@ -235,7 +235,9 @@ void cmd_json_start(uint16_t Port)
 void cmd_json_stop(void)
 {
     LOGD("stop\n");
-    jrpc_server_stop(&mJrpc);
+    if (mJrpc.port_number != 0) {
+        jrpc_server_stop(&mJrpc);
+    }
 }
 
 
@@ -480,7 +482,9 @@ static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
         ctx->error_code = err;
         ctx->error_message = error_str_cjson(err);
     }
-    jrpc_server_stop(&mJrpc);
+    if (mJrpc.port_number != 0) {
+        jrpc_server_stop(&mJrpc);
+    }
 
     return result;
 }
@@ -535,11 +539,11 @@ static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id)
     } else {
         goto LABEL_EXIT;
     }
-    //push_sat
+    //push_msat
     json = cJSON_GetArrayItem(params, index++);
     if (json && (json->type == cJSON_Number)) {
-        fundconf.push_sat = json->valueu64;
-        LOGD("push_sat=%" PRIu64 "\n", fundconf.push_sat);
+        fundconf.push_msat = json->valueu64;
+        LOGD("push_msat=%" PRIu64 "\n", fundconf.push_msat);
     } else {
         goto LABEL_EXIT;
     }
@@ -764,7 +768,7 @@ static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id)
         chain = "unknown";
     }
     cJSON_AddItemToObject(result, "chain", cJSON_CreateString(chain));
-    
+
     //amount_msat
     cJSON_AddItemToObject(result, "amount_msat", cJSON_CreateNumber64(p_invoice_data->amount_msat));
     //timestamp
@@ -1511,7 +1515,7 @@ static cJSON *cmd_walletback(jrpc_context *ctx, cJSON *params, cJSON *id)
     ret = wallet_from_ptarm(&p_result, &vout_amount, tosend, addr, feerate_per_kw);
     if (ret) {
         result = cJSON_CreateObject();
-        cJSON_AddItemToObject(result, "txid", cJSON_CreateString(p_result));
+        cJSON_AddItemToObject(result, "message", cJSON_CreateString(p_result));
         cJSON_AddItemToObject(result, "amount", cJSON_CreateNumber64(vout_amount));
         UTL_DBG_FREE(p_result);
     } else {
@@ -1587,7 +1591,8 @@ static cJSON *cmd_listpayment(jrpc_context *ctx, cJSON *params, cJSON *id)
         if (ln_db_payment_invoice_load_2(&buf_invoice, payment_id, p_cur)) {
             char *p_invoice = (char *)UTL_DBG_MALLOC(buf_invoice.len + 1);
             if (p_invoice) {
-                strncpy(p_invoice, (char *)buf_invoice.buf, buf_invoice.len + 1);
+                memcpy(p_invoice, buf_invoice.buf, buf_invoice.len);
+                p_invoice[buf_invoice.len] = '\0';
                 cJSON_AddItemToObject(json, "invoice", cJSON_CreateString(p_invoice));
             } else {
                 LOGE("fail: ???\n");
@@ -1848,38 +1853,36 @@ static int cmd_fund_proc(const uint8_t *pNodeId, const funding_conf_t *pFund, jr
 {
     LOGD("fund\n");
 
+    int ret = 0;
+
     lnapp_conf_t *p_conf = ptarmd_search_connected_node_id(pNodeId);
     if (!p_conf) {
         //未接続
         return RPCERR_NOCONN;
     }
 
-    if (ln_node_search_channel(NULL, pNodeId)) {
+    if (p_conf->channel.status >= LN_STATUS_ESTABLISH) {
         //開設しようとしてチャネルが開いている
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return RPCERR_ALOPEN;
+        ret = RPCERR_ALOPEN;
+        goto LABEL_EXIT;
     }
 
     if (ln_funding_info_funding_now(&p_conf->channel.funding_info)) {
         //開設しようとしてチャネルが開設中
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return RPCERR_OPENING;
+        ret = RPCERR_OPENING;
+        goto LABEL_EXIT;
     }
 
     if (!lnapp_is_inited(p_conf)) {
         //BOLTメッセージとして初期化が完了していない(init/channel_reestablish交換できていない)
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return RPCERR_NOINIT;
+        ret = RPCERR_NOINIT;
+        goto LABEL_EXIT;
     }
 
     if (!lnapp_check_ponglist(p_conf)) {
         LOGE("fail: node busy\n");
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return RPCERR_BUSY;
+        ret = RPCERR_BUSY;
+        goto LABEL_EXIT;
     }
 
     uint32_t feerate_per_kw = pFund->feerate_per_kw;
@@ -1888,9 +1891,8 @@ static int cmd_fund_proc(const uint8_t *pNodeId, const funding_conf_t *pFund, jr
     }
     if (feerate_per_kw == 0) {
         LOGE("fail: feerate_per_kw==0\n");
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return RPCERR_BLOCKCHAIN;
+        ret = RPCERR_BLOCKCHAIN;
+        goto LABEL_EXIT;
     }
     uint64_t fee = ln_estimate_initcommittx_fee(feerate_per_kw);
     if (pFund->funding_sat < fee + BTC_DUST_LIMIT + LN_FUNDING_SATOSHIS_MIN) {
@@ -1900,19 +1902,18 @@ static int cmd_fund_proc(const uint8_t *pNodeId, const funding_conf_t *pFund, jr
         LOGD(str);
         ctx->error_code = RPCERR_FUNDING;
         ctx->error_message = strdup_cjson(str);
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return M_RPCERR_FREESTRING;
+        ret = M_RPCERR_FREESTRING;
+        goto LABEL_EXIT;
     }
 
     if (!lnapp_funding(p_conf, pFund)) {
-        lnapp_manager_free_node_ref(p_conf);
-        p_conf = NULL;
-        return RPCERR_FUNDING;
+        ret = RPCERR_FUNDING;
+        goto LABEL_EXIT;
     }
 
+LABEL_EXIT:
     lnapp_manager_free_node_ref(p_conf);
-    return 0;
+    return ret;
 }
 
 
@@ -2067,7 +2068,7 @@ static int cmd_close_mutual_proc(const uint8_t *pNodeId)
     }
 
     ln_status_t stat = ln_status_get(&p_conf->channel);
-    if ((stat < LN_STATUS_ESTABLISH) || (LN_STATUS_NORMAL < stat)) {
+    if ((stat < LN_STATUS_ESTABLISH) || (stat > LN_STATUS_NORMAL_OPE)) {
         err = RPCERR_NOCHANNEL;
         goto LABEL_EXIT;
     }
@@ -2094,27 +2095,26 @@ static int cmd_close_unilateral_proc(const uint8_t *pNodeId)
 {
     LOGD("unilateral close\n");
 
-    int err;
-    bool haveCnl = ln_node_search_channel(NULL, pNodeId);
-    if (haveCnl) {
-        bool ret = lnapp_close_channel_force(pNodeId);
-        if (ret) {
-            lnapp_conf_t *p_conf = ptarmd_search_connected_node_id(pNodeId);
-            if (p_conf) {
-                lnapp_stop(p_conf);
-                lnapp_manager_free_node_ref(p_conf);
-            }
-            err = 0;
-        } else {
-            LOGE("fail: unilateral close\n");
-            err = RPCERR_CLOSE_FAIL;
-        }
-    } else {
-        //チャネルなし
-        err = RPCERR_NOCHANNEL;
+    int ret = 0;
+
+    lnapp_conf_t *p_conf = lnapp_manager_get_node(pNodeId);
+    if (!p_conf) {
+        LOGE("fail: unilateral close\n");
+        return RPCERR_NOCHANNEL;
     }
 
-    return err;
+    lnapp_stop(p_conf);
+
+    //XXX: block reconnection
+
+    if (!lnapp_close_channel_force(p_conf)) {
+        ret = RPCERR_CLOSE_FAIL;
+        goto LABEL_EXIT;
+    }
+
+LABEL_EXIT:
+    lnapp_manager_free_node_ref(p_conf);
+    return ret;
 }
 
 
@@ -2201,7 +2201,7 @@ static void create_bolt11_r_field(ln_r_field_t **ppRField, uint8_t *pRFieldNum, 
 }
 
 
-/** #ln_node_search_channel()処理関数
+/** #lnapp_manager_each_node()処理関数
  *
  * @param[in,out]   pChannel        channel from DB
  * @param[in,out]   pParam          r_field_param_t構造体

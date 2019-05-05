@@ -138,6 +138,11 @@ void HIDDEN ln_derkey_local_storage_create_per_commitment_secret(const ln_derkey
 bool HIDDEN ln_derkey_local_storage_create_prev_per_commitment_secret(const ln_derkey_local_keys_t *pKeys, uint8_t *pSecret, uint8_t *pPerCommitPt);
 
 
+//for resending `revoke_and_ack`
+//  as we updated index at the first `revoke_and_ack`
+bool HIDDEN ln_derkey_local_storage_create_second_prev_per_commitment_secret(const ln_derkey_local_keys_t *pKeys, uint8_t *pSecret, uint8_t *pPerCommitPt);
+
+
 uint64_t ln_derkey_local_storage_get_prev_index(const ln_derkey_local_keys_t *pKeys);
 
 
@@ -171,11 +176,11 @@ uint64_t ln_derkey_remote_storage_get_next_index(const ln_derkey_remote_keys_t *
 
 
 bool HIDDEN ln_derkey_local_update_script_pubkeys(
-    ln_derkey_local_keys_t *pLocalKeys, ln_derkey_remote_keys_t *pRemoteKeys);
+    ln_derkey_local_keys_t *pLocalKeys, const ln_derkey_remote_keys_t *pRemoteKeys);
 
 
 bool HIDDEN ln_derkey_remote_update_script_pubkeys(
-    ln_derkey_remote_keys_t *pRemoteKeys, ln_derkey_local_keys_t *pLocalKeys);
+    ln_derkey_remote_keys_t *pRemoteKeys, const ln_derkey_local_keys_t *pLocalKeys);
 
 
 bool HIDDEN ln_derkey_update_script_pubkeys(

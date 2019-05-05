@@ -25,7 +25,6 @@
 #ifndef LN_COMMIT_TX_H__
 #define LN_COMMIT_TX_H__
 
-#include "ln.h"
 #include "ln_commit_tx_util.h"
 
 
@@ -45,8 +44,8 @@
  *   4. commit_txの送金先処理
  *   5. メモリ解放
  *
- * @param[in,out]       pChannel
  * @param[in,out]       pCommitInfo
+ * @param[in,out]       pUpdateInfo
  * @param[out]          pClose              非NULL:自分がunilateral closeした情報を返す
  * @param[in]           pHtlcSigs           commitment_signedで受信したHTLCの署名(NULL時はHTLC署名無し)
  * @param[in]           NumHtlcSigs         pHtlcSigsの署名数
@@ -55,11 +54,19 @@
  *      - pubkeys[LN_BASEPOINT_IDX_PER_COMMIT]にはCommitNumに対応するper_commitment_pointが入っている前提。
  */
 bool HIDDEN ln_commit_tx_create_local(
-    ln_channel_t *pChannel,
     ln_commit_info_t *pCommitInfo,
-    ln_close_force_t *pClose,
+    ln_update_info_t *pUpdateInfo,
+    const ln_derkey_local_keys_t *pKeysLocal,
     const uint8_t (*pHtlcSigs)[LN_SZ_SIGNATURE],
     uint16_t NumHtlcSigs);
+
+
+bool HIDDEN ln_commit_tx_create_local_close(
+    const ln_commit_info_t *pCommitInfo,
+    const ln_update_info_t *pUpdateInfo,
+    const ln_derkey_local_keys_t *pKeysLocal,
+    const ln_derkey_remote_keys_t *pKeysRemote,
+    ln_close_force_t *pClose);
 
 
 /** create commitment transaction info
@@ -67,13 +74,23 @@ bool HIDDEN ln_commit_tx_create_local(
  * @param[in,out]       pCommitTxInfo
  * @param[in]           pCommitInfo
  * @param[in]           pUpdateInfo
+ * @param[in]           pScriptPubkeys
  * @param[in]           bLocal
  * @retval              true        success
  */
-bool HIDDEN ln_commit_tx_info_create(
+bool HIDDEN ln_commit_tx_info_create_pre_committed(
     ln_commit_tx_info_t *pCommitTxInfo,
     const ln_commit_info_t *pCommitInfo,
     const ln_update_info_t *pUpdateInfo,
+    const uint8_t (*pScriptPubkeys)[BTC_SZ_PUBKEY],
+    bool bLocal);
+
+
+bool HIDDEN ln_commit_tx_info_create_committed(
+    ln_commit_tx_info_t *pCommitTxInfo,
+    const ln_commit_info_t *pCommitInfo,
+    const ln_update_info_t *pUpdateInfo,
+    const uint8_t (*pScriptPubkeys)[BTC_SZ_PUBKEY],
     bool bLocal);
 
 
@@ -99,16 +116,25 @@ void HIDDEN ln_commit_tx_info_free(ln_commit_tx_info_t *pCommitTxInfo);
  *   5. メモリ解放
  *
  * @param[in,out]       pChannel
- * @param[in,out]       pCommitInfoRemote
+ * @param[in,out]       pCommitInfo
  * @param[out]          pClose              非NULL:相手がunilateral closeした場合の情報を返す
  * @param[out]          ppHtlcSigs          commitment_signed送信用署名(NULLの場合は代入しない)
  * @retval  true    成功
  */
 bool HIDDEN ln_commit_tx_create_remote(
-    const ln_channel_t *pChannel,
-    ln_commit_info_t *pCommitInfoRemote,
-    ln_close_force_t *pClose,
+    ln_commit_info_t *pCommitInfo,
+    const ln_update_info_t *pUpdateInfo,
+    const ln_derkey_local_keys_t *pKeysLocal,
+    const ln_derkey_remote_keys_t *pKeysRemote,
     uint8_t (**ppHtlcSigs)[LN_SZ_SIGNATURE]);
+
+
+bool HIDDEN ln_commit_tx_create_remote_close(
+    const ln_commit_info_t *pCommitInfo,
+    const ln_update_info_t *pUpdateInfo,
+    const ln_derkey_local_keys_t *pKeysLocal,
+    const ln_derkey_remote_keys_t *pKeysRemote,
+    ln_close_force_t *pClose);
 
 
 /** P2WSH署名 - 2-of-2 トランザクション更新
@@ -142,6 +168,10 @@ bool ln_commit_tx_set_vin_p2wsh_2of2_rs(
     const uint8_t *pSig1,
     const uint8_t *pSig2,
     const utl_buf_t *pWitScript);
+
+
+void HIDDEN ln_commit_tx_rewind_one_commit_remote(
+    ln_commit_info_t *pCommitInfo, ln_update_info_t *pUpdateInfo);
 
 
 #endif /* LN_COMMIT_TX_H__ */

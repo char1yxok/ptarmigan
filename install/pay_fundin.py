@@ -24,8 +24,14 @@ import datetime
 +-----+
 '''
 
+ERR_INVALID_ARG = 1
+ERR_NO_AMOUNT = 2
+ERR_BC_CREATE_TX = 3
+ERR_BC_SEND_TX = 4
+ERR_EXCEPTION = 100
 
-def fund_in(name, funding_sat, push_msat):
+
+def fund_in(funding_sat, push_msat):
     fundamount = float(funding_sat) / 100000000
     fundamount = round(fundamount, 8)
 
@@ -34,7 +40,7 @@ def fund_in(name, funding_sat, push_msat):
     fundsum = 0     # output amount + txfee
 
     feerate = estimatefeerate()
-    print('[FeeRate] {0:.8f}'.format(feerate))
+    print('[FeeRate] {0:.8f}'.format(feerate), file=sys.stderr)
 
     #New UTXO has 'fundamount' plus 'fundfee'.
     fundfee = round(227 * feerate / 1000, 8)
@@ -42,14 +48,14 @@ def fund_in(name, funding_sat, push_msat):
 
     sum, cmd_sum, fundsum, txfee, estimate_vsize = aggregate_inputs(fundamount, feerate)
     if sum < fundamount:
-        print("ERROR: You don't have enough amount(P2PKH, P2WPKH).")
-        return
+        print("ERROR: You don't have enough amount(P2PKH, P2WPKH).", file=sys.stderr)
+        return ERR_NO_AMOUNT, None
 
     dispfundamount = "{0:.8f}".format(round(fundamount, 8))
     change = round(sum - fundamount - txfee, 8)
 
-    print("[Size] " + str(estimate_vsize) + " bytes")
-    print("[Send] " + dispfundamount + " btc")
+    print("[Size] " + str(estimate_vsize) + " bytes", file=sys.stderr)
+    print("[Send] " + dispfundamount + " btc", file=sys.stderr)
 
     #TX OUTPUT
     newaddr = getnewaddress()
@@ -57,35 +63,33 @@ def fund_in(name, funding_sat, push_msat):
 
     ret, signhex = create_tx(cmd_sum, sum, fundsum, change)
     if not ret:
-        print('ERROR: create transaction was failed.')
-        return
+        print('ERROR: create transaction was failed.', file=sys.stderr)
+        return ERR_BC_CREATE_TX, None
 
     #fee calclate 2
     vsize = get_vsize(signhex)
     if vsize != estimate_vsize:
-        #print('[ReCalc]vsize not same(' + str(estimate_vsize) + ' --> ' + str(vsize) + ')')
+        print('[ReCalc]vsize not same(' + str(estimate_vsize) + ' --> ' + str(vsize) + ')', file=sys.stderr)
         txfee, fundsum, change = calc_txfee(sum, vsize, feerate, fundamount)
         ret, signhex = create_tx(cmd_sum, sum, fundsum, change)
         if not ret:
-            print('ERROR: create transaction was failed.')
-            return
+            print('ERROR: create transaction was failed.', file=sys.stderr)
+            return ERR_BC_CREATE_TX, None
 
     sendtx = signrawtx(signhex)
     if 'error' in sendtx:
-        print('ERROR: sendtransaction was failed.')
-        print('--------')
-        print(sendtx)
-        return
-    print("[Address] " + newaddr)
-    print("[TXID] " + sendtx)
+        print('ERROR: sendtransaction was failed.', file=sys.stderr)
+        print('--------', file=sys.stderr)
+        print(sendtx, file=sys.stderr)
+        return ERR_BC_SEND_TX, None
+    print("[Address] " + newaddr, file=sys.stderr)
+    print("[TXID] " + sendtx, file=sys.stderr)
 
     # lock unspent(NOTE: not auto unlock!!)
-    lockvout = lockunspent(sendtx)
-    print('[LOCK]', lockvout)
+    lockvout = lockunspent(sendtx, 0)
+    print('[LOCK]', lockvout, file=sys.stderr)
 
-    #CREATE CONF
-    create_conf(name, sendtx, newaddr, funding_sat, push_msat)
-    print('[CREATE] ' + name)
+    return 0, (sendtx, newaddr, funding_sat, push_msat)
 
 
 def aggregate_inputs(fundamount, feerate):
@@ -122,6 +126,9 @@ def aggregate_inputs(fundamount, feerate):
             #print('skip')
             continue
 
+        do_lock = lockunspent(str(lu[i]['txid']), lu[i]['vout'])
+        if not do_lock:
+            continue
         sum += lu[i]['amount']
         txlist.append("{\"txid\":\"" + str(lu[i]['txid']) + "\",\"vout\":" + str(lu[i]['vout']) + "}")
         inputs += 1
@@ -158,7 +165,7 @@ def aggregate_inputs(fundamount, feerate):
 
     # https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer
     if inputs == 0:
-        print('no input')
+        print('no input', file=sys.stderr)
     elif inputs < 0xfd:
         estimate_vsize += 1
     elif inputs <= 0xffff:
@@ -200,10 +207,10 @@ def estimatefeerate():
     else:
         chain = get_chain()
         if chain == 'regtest':
-            print('WARNING: estimatesmartfee was failed ==> minimum feerate')
-            feerate = 0.00001000
+            print('WARNING: estimatesmartfee was failed ==> dummy feerate', file=sys.stderr)
+            feerate = 0.00002000
         else:
-            print('ERROR: estimatesmartfee was failed.')
+            print('ERROR: estimatesmartfee was failed.', file=sys.stderr)
             sys.exit()
     return feerate
 
@@ -226,7 +233,7 @@ def create_sign_tx(cmd):
     if signcomplete:
         return True, signhex
     else:
-        print("ERROR: signrawtransaction was failed.")
+        print("ERROR: signrawtransaction was failed.", file=sys.stderr)
         return False, None
 
 
@@ -236,8 +243,8 @@ def signrawtx(signhex):
     return sendtx
 
 
-def lockunspent(sendtx):
-    outpoint = '{\\"txid\\":\\"' + sendtx + '\\",\\"vout\\":0}'
+def lockunspent(txid, txindex):
+    outpoint = '{\\"txid\\":\\"' + txid + '\\",\\"vout\\":' + str(txindex) + '}'
     lockvout = subprocess.run(('bitcoin-cli lockunspent false "[' + outpoint + ']"'), shell = True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return lockvout.stdout.decode("utf8").strip() == 'true'
 
@@ -250,56 +257,90 @@ def get_vsize(signhex):
 
 
 def create_conf(name, sendtx, newaddr, funding_sat, push_msat):
-    #TXID
-    txid = "txid=" + sendtx + "\n"
     #TXINDEX
     cmd = "bitcoin-cli gettxout " + sendtx + " 0 | grep " + newaddr + " | wc -c"
     index = subprocess.check_output(cmd, shell = True)
     if int(index) > 0:
-        txindex = "txindex=0" + "\n"
+        txindex = 0
     else:
-        txindex = "txindex=1" + "\n"
-    #SIGNADDR
-    signaddr = "signaddr=" + newaddr + "\n"
-    #FUNDING AMOUNT
-    funding_sat = "funding_sat=" + str(funding_sat) + "\n"
-    #PUSH AMOUNT
-    push_sat = "push_sat=" + str(push_msat) + "\n"
-    #FEE RATE
-    feerate_per_kw = "feerate_per_kw=" + "0" + "\n"
+        txindex = 1
+    #FEERATE(default)
+    feerate_per_kw = 0
 
     conf = open(name, 'a')
-    conf.write(txid)
-    conf.write(txindex)
-    conf.write(signaddr)
-    conf.write(funding_sat)
-    conf.write(push_sat)
-    conf.write(feerate_per_kw)
+    conf.write("txid=" + sendtx + "\n")
+    conf.write("txindex=" + str(txindex) + "\n")
+    conf.write("signaddr=" + newaddr + "\n")
+    conf.write("funding_sat=" + str(funding_sat) + "\n")
+    conf.write("push_msat=" + str(push_msat) + "\n")
+    conf.write("feerate_per_kw=" + str(feerate_per_kw) + "\n")
     conf.close()
+
+
+def create_json(sendtx, newaddr, funding_sat, push_msat):
+    #TXINDEX
+    cmd = "bitcoin-cli gettxout " + sendtx + " 0 | grep " + newaddr + " | wc -c"
+    index = subprocess.check_output(cmd, shell = True)
+    if int(index) > 0:
+        txindex = 0
+    else:
+        txindex = 1
+    #FEERATE(default)
+    feerate_per_kw = 0
+
+    dict_json = {
+        'txid': sendtx,
+        'txindex': txindex,
+        'signaddr': newaddr,
+        'funding_sat': funding_sat,
+        'push_msat': push_msat,
+        'feerate_per_kw': feerate_per_kw}
+    return json.dumps(dict_json)
 
 
 if __name__ == '__main__':
     args = sys.argv
 
-    if len(args) != 3 and len(args) != 4:
-        print('usage:\n\t' + args[0] + ' [funding_satoshis] [push_msat m-satoshis]')
-        sys.exit()
+    if len(args) != 2 and len(args) != 3 and len(args) != 4:
+        print('usage:\n\t' + args[0] + ' FUNDING_SATOSHIS [PUSH_MSAT] [OUTPUT_FILENAME]', file=sys.stderr)
+        sys.exit(ERR_INVALID_ARG)
+    if len(args) >= 3:
+        push_msat = args[2]
+    else:
+        push_msat = '0'
     if len(args) == 4:
         name = args[3]
     else:
         name = str("fund_" + datetime.datetime.now().strftime("%Y%m%d%H%M%S") + ".conf")
 
-    if not args[1].isdecimal() or not args[2].isdecimal():
-        print('ERROR: invalid arguments')
-        sys.exit()
+    if not args[1].isdecimal() or not push_msat.isdecimal():
+        print('ERROR: invalid arguments', file=sys.stderr)
+        sys.exit(ERR_INVALID_ARG)
     if int(args[1]) < 100000:
-        print('ERROR: funding_satoshis < 100,000 sat')
-        sys.exit()
+        print('ERROR: funding_satoshis < 100,000 sat', file=sys.stderr)
+        sys.exit(ERR_INVALID_ARG)
     elif int(args[1]) > 1000000:
-        print('ERROR: funding_satoshis > 1,000,000 sat')
-        sys.exit()
-    if int(args[2]) >= int(args[1]) * 1000:
-        print('ERROR: funding_satoshis * 1,000 < push_msat')
-        sys.exit()
+        print('ERROR: funding_satoshis > 1,000,000 sat', file=sys.stderr)
+        sys.exit(ERR_INVALID_ARG)
+    if int(push_msat) >= int(args[1]) * 800:
+        print('ERROR: funding_satoshis * 1,000 * 80% < push_msat', file=sys.stderr)
+        sys.exit(ERR_INVALID_ARG)
 
-    fund_in(name, args[1], args[2])
+    #try:
+    ret, *params = fund_in(args[1], push_msat)
+    if ret == 0:
+        #CREATE CONF
+        sendtx = params[0][0]
+        newaddr = params[0][1]
+        funding_sat = params[0][2]
+        push_msat = params[0][3]
+        if name == 'json':
+            print(create_json(sendtx, newaddr, funding_sat, push_msat))
+        else:
+            create_conf(name, sendtx, newaddr, funding_sat, push_msat)
+            print('[CREATE] ' + name, file=sys.stderr)
+    # except:
+    #     print('error happen: exception', file=sys.stderr)
+    #     ret = ERR_EXCEPTION
+
+    sys.exit(ret)

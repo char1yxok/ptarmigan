@@ -108,6 +108,10 @@ static bool                         mRunning;
 static ln_establish_param_t         mEstablishParam;
 
 
+/** @var    kSCRIPT
+ *  @brief  call script filename
+ *  @note   update with ptarmd_event_t
+ */
 static const char *kSCRIPT[] = {
     //PTARMD_EVT_STARTED
     "started.sh",
@@ -130,7 +134,9 @@ static const char *kSCRIPT[] = {
     //PTARMD_EVT_HTLCCHANGED,
     "htlcchanged.sh",
     //PTARMD_EVT_CLOSED
-    "closed.sh"
+    "closed.sh",
+    //ptarmd_event_t
+    "dbclosed.sh"
 };
 
 
@@ -282,57 +288,10 @@ const char *ptarmd_execpath_get(void)
 }
 
 
-lnapp_conf_t *ptarmd_search_transferable_channel(uint64_t short_channel_id)
-{
-    lnapp_conf_t *p_conf = p2p_search_active_channel(short_channel_id);
-    if (!p_conf) {
-        LOGE("fail: not connected\n");
-        return NULL;
-    }
-
-    if (!lnapp_is_active(p_conf)) {
-        LOGE("fail: not working\n");
-        goto LABEL_ERROR;
-    }
-    if (!lnapp_is_inited(p_conf)) {
-        LOGE("fail: not initialized\n");
-        goto LABEL_ERROR;
-    }
-    if (!lnapp_check_ponglist(p_conf)) {
-        LOGE("fail: not pingpong\n");
-        goto LABEL_ERROR;
-    }
-    if (ln_status_get(&p_conf->channel) != LN_STATUS_NORMAL) {
-        LOGE("fail: bad status\n");
-        goto LABEL_ERROR;
-    }
-
-    return p_conf;
-
-LABEL_ERROR:
-    lnapp_manager_free_node_ref(p_conf);
-    return NULL;
-}
-
-
 lnapp_conf_t *ptarmd_search_connected_node_id(const uint8_t *p_node_id)
 {
     lnapp_conf_t *p_conf = p2p_search_active_node(p_node_id);
     if (!p_conf) {
-        return NULL;
-    }
-    return p_conf;
-}
-
-
-lnapp_conf_t *ptarmd_search_transferable_node_id(const uint8_t *p_node_id)
-{
-    lnapp_conf_t *p_conf = p2p_search_active_node(p_node_id);
-    if (!p_conf) {
-        return NULL;
-    }
-    if (ln_status_get(&p_conf->channel) != LN_STATUS_NORMAL) {
-        lnapp_manager_free_node_ref(p_conf);
         return NULL;
     }
     return p_conf;

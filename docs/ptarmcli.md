@@ -15,36 +15,44 @@ ptarmcli [options] [JSON-RPC port number]
 ### options
 
 * single command
-  * `-h` : help
-  * `-q` : quit ptarmd
+  * `--help` : help
+  * `--stop` : quit ptarmd
 
 * connect peer
   * `-c NODE_ID@IPADDR:PORT` : new connection or already connected node
-  * `-c NODE_ID` : already connected node
+    * get all channel information from peer with `--initroutesync`
 
 * information
-  * `-l` : get information
-  * `-m` : list invoices
+  * `--getinfo` : get information
 
 * funding
   * `-f FUND_CONFIG_FILE` : open channel(need `-c` option)
+    * FUND_CONFIG_FILE can create by `pay_fundin.py`
+
+* invoice
+  * `--addinvoice AMOUNT_MSAT` : add invoice
+  * `--listinvoice` : list invoices
+  * `--removeinvoice PAYMENT_HASH` : erase a payment_hash
+  * `--removeinvoice ALL` : erase all payment_hashs
 
 * payment
-  * `-i AMOUNT_MSAT` : add invoice
-  * `-e PAYMENT_HASH` : erase a payment_hash
-  * `-e ALL` : erase all payment_hashs
-  * `-r BOLT11_INVOICE[,ADD_AMOUNT_MSAT]`  : payment with BOLT11 invoice format
-    * `ptarmd` save fail node in DB if payment route return error for route skip.
+  * `--sendpayment BOLT11_INVOICE[,ADD_AMOUNT_MSAT]` : payment with BOLT11 invoice format
+  * `--listpayment` : list payments
+  * `--removepayment PAYMENT_ID` : remove a payment from the payment list
 
 * fee
   * `--setfeerate FEERATE_PER_KW` : set feerate_per_kw
     * if set not 0 value, send `update_fee`
 
-* `-x` : close channel(need `-c` option)
+* close channel
+  * `-x` : mutual close(need `-c` option)
+  * `-xforce` : unilateral close(need `-c` option)
 
+<!--
 * debug
-  * `-d DECIMAL_VALUE` : debug option
+  * `--debug DECIMAL_VALUE` : debug option
   * `-c NODE_ID -g` : get commitment transaction and HTLC transaction
+-->
 
 * port
   * default port number is 9736
@@ -85,22 +93,32 @@ ptarmcli -c 02f5fa009cbf9774960d5f5591a37fd931fe4a22563b7cfbf57d3f9a98b0e11882@1
 ```
 
 #### funding
+For funding, it needs a config file.
 
 ```bash
-../pay_fundin.sh 10000 8000 4000
+../pay_fundin.py 1000000 50000 
+
+[FeeRate] 0.00001000
+[Size] 167 bytes
+[Send] 0.01000227 btc
+[Address] 2NCvy3cefpVHBGrjC6RgAJPCZZEeLpvvYcE
+[TXID] 04c7fe01a3721ebb0ab417dad804b22ad7aebd812bd81c5141ede9ff8645cd17
+[LOCK] True
+[CREATE] fund_20190415053538.conf
 
 ----
-cat fund.conf
+cat fund_20190415053538.conf
 
-txid=9a7b4456d7c2758540127d0401a75c5064b1f46f36aada499d5c85fcbd5dd782
+txid=04c7fe01a3721ebb0ab417dad804b22ad7aebd812bd81c5141ede9ff8645cd17
 txindex=0
-signaddr=2NF8JohaX34qZV4mKZmZk17CcDMtbutF2fc
-funding_sat=8000
-push_sat=4000
+signaddr=2NCvy3cefpVHBGrjC6RgAJPCZZEeLpvvYcE
+funding_sat=1000000
+push_msat=50000
 feerate_per_kw=0
 ----
 
-ptarmcli -c 028df7753f0802ec2b781ffd44da838b7b57baebe2930132411fded4399e33bf58 -f fund.conf
+ptarmcli -c 028df7753f0802ec2b781ffd44da838b7b57baebe2930132411fded4399e33bf58 -f fund_20190415053538.conf
+
 ```
 
 ```json
@@ -110,10 +128,11 @@ ptarmcli -c 028df7753f0802ec2b781ffd44da838b7b57baebe2930132411fded4399e33bf58 -
         "028df7753f0802ec2b781ffd44da838b7b57baebe2930132411fded4399e33bf58",
         "0.0.0.0",
         0,
-        "9a7b4456d7c2758540127d0401a75c5064b1f46f36aada499d5c85fcbd5dd782",
+        "04c7fe01a3721ebb0ab417dad804b22ad7aebd812bd81c5141ede9ff8645cd17",
         0,
-        8000,
-        4000,
+        1000000,
+        50000,
+        0,
         0
     ]
 }
@@ -128,7 +147,10 @@ ptarmcli -i 123000
 ```json
 {
     "method":"invoice",
-    "params":[ 123000 ]
+    "params":[ 
+                123000,
+                0
+             ]
 }
 ```
 
